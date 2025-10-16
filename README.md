@@ -11,3 +11,16 @@
 
 ## Pytania:
     - jak duży zestaw parametrów wybrać?
+
+## Wybrane modele:
+    - XGBoost - Daria
+    - RandomForest - Oliwia
+    - ElasticNet - Ala
+
+
+## Do zrobienia na przyszły tydzień:
+    1. Siatka hiperparametrów dla naszego modelu
+    2. Dla każdej ramki danych znależć najlepsze hiperparametry wykorzystując dwie metody:
+        - RandomGridSearch
+        - Bayes
+    3. Czyli końcowo -> 6 zestawów hiperparametrów + analiza liczby iteracji dla każdej z dwóch metod (w ilu ietracjach znalazłyśmy okej hiperparametry)
