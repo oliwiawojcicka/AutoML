@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.model_selection import cross_val_score, cross_val_score, train_test_split
@@ -6,6 +7,8 @@ from sklearn.model_selection import RandomizedSearchCV
 from skopt import BayesSearchCV 
 import matplotlib.pyplot as plt
 from numpy import maximum
+import os
+import re
 
 def load_and_split(path, target_name, test_size=0.2, random_state=42):
     data = pd.read_csv(path)
@@ -13,10 +16,10 @@ def load_and_split(path, target_name, test_size=0.2, random_state=42):
     y = data[target_name]
     return train_test_split(X, y, test_size=test_size, random_state=random_state)
 
-def tune(model, param_grid, X_train, y_train, scoring='roc_auc', n_iter_random=50, n_iter_bayes=50):
+def tune(model, param_random_grid, param_bayes_grid, X_train, y_train, name, scoring='roc_auc', n_iter_random=50, n_iter_bayes=50):
     random_search = RandomizedSearchCV(
     estimator=model,
-    param_distributions=param_grid,
+    param_distributions=param_random_grid,
     n_iter=n_iter_random,
     cv=3, 
     scoring=scoring,
@@ -29,7 +32,7 @@ def tune(model, param_grid, X_train, y_train, scoring='roc_auc', n_iter_random=5
     
     opt = BayesSearchCV(
     estimator=model,
-    search_spaces=param_grid,
+    search_spaces=param_bayes_grid,
     n_iter=n_iter_bayes,
     cv=3,
     scoring=scoring,      
@@ -40,18 +43,24 @@ def tune(model, param_grid, X_train, y_train, scoring='roc_auc', n_iter_random=5
     )
     
     opt.fit(X_train, y_train)
+    # zapis wyników do csv pod nazwą metody szukania (random, bayes), modelu i zbioru danych
+    random_search_results = pd.DataFrame(random_search.cv_results_)
+    bayes_search_results = pd.DataFrame(opt.cv_results_)
+
+    os.makedirs("results_tunning", exist_ok=True)
+    random_search_results.to_csv(f"results_tunning/random_search_results_{model.__class__.__name__}_{name}.csv", index=False)
+    bayes_search_results.to_csv(f"results_tunning/bayes_search_results_{model.__class__.__name__}_{name}.csv", index=False)
     return random_search, opt
 
-def tune_for_each_data(model, param_grid, list_X_train, list_y_train, scoring='roc_auc'):
-    import pandas as pd
-
+def tune_for_each_data(model, param_random_grid, param_bayes_grid, list_X_train, list_y_train, scoring='roc_auc'):
     results_rs = []
     results_bs = []
     scores_rs = []
     all_results_df = []
 
     for i in range(len(list_X_train)):
-        rs, bs = tune(model, param_grid, list_X_train[i], list_y_train[i], scoring)
+        k = f'dataset_{i}'
+        rs, bs = tune(model, param_random_grid, param_bayes_grid, list_X_train[i], list_y_train[i], k, scoring)
 
         results_rs.append(rs)
         results_bs.append(bs)
@@ -68,15 +77,15 @@ def tune_for_each_data(model, param_grid, list_X_train, list_y_train, scoring='r
 
     return results_rs, results_bs, scores_rs, full_results_df
 
-def plots_for_iterations(rs, bs):
+def plots_iterations(rs, bs, model_name, dataset_name):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-    random_iter = len(rs.cv_results_['mean_test_score'])
-    bayes_iter = len(bs.cv_results_['mean_test_score'])
+    random_iter = len(rs['mean_test_score'])
+    bayes_iter = len(bs['mean_test_score'])
 
-    rs_best = list(rs.cv_results_['mean_test_score'])
-    bs_best = list(bs.cv_results_['mean_test_score'])
-    rs_max_score = maximum.accumulate(rs.cv_results_["mean_test_score"])
-    bs_max_score = maximum.accumulate(bs.cv_results_["mean_test_score"])
+    rs_best = list(rs['mean_test_score'])
+    bs_best = list(bs['mean_test_score'])
+    rs_max_score = maximum.accumulate(rs["mean_test_score"])
+    bs_max_score = maximum.accumulate(bs["mean_test_score"])
 
     axes[0].plot(range(1, random_iter + 1), rs_best, label='RandomizedSearchCV', marker='o')    
     axes[0].plot(range(1, random_iter + 1), rs_max_score, color="orange", linestyle="--", label="Running best")
@@ -93,48 +102,90 @@ def plots_for_iterations(rs, bs):
     axes[1].grid()
 
     axes[0].set_ylabel('Średni wynik testu')
-    
-    plt.suptitle("Porównanie postępu wyników dla RandomSearch i BayesSearch (XGBoost)", fontsize=14)
+
+    plt.suptitle(f"Porównanie postępu wyników dla RandomSearch i BayesSearch ({model_name}, {dataset_name})", fontsize=14)
     plt.tight_layout()
     plt.show()
+    rs_best_param = rs['rank_test_score'].idxmin()
+    bs_best_param = bs['rank_test_score'].idxmin()
     
-    
-def search_for_default(full_results_df):
+    print('Najlepsze hiperparametry random:', rs['params'][rs_best_param])
+    print('Najlepszy wynik random:', rs['mean_test_score'][rs_best_param])
+    print('Najlepsze hiperparametry bayes:', bs['params'][bs_best_param])
+    print('Najlepszy wynik bayes:', bs['mean_test_score'][bs_best_param])
 
-    # Wyodrębnienie nazw kolumn odpowiadających hiperparametrom
-    hyperparameter = [col for col in full_results_df.columns if col not in ['mean_test_score', 'dataset']]
 
-    # Uśrednienie wyników dla każdego zestawu hiperparametrów (po wszystkich zbiorach danych)
-    df_grouped = full_results_df.groupby(hyperparameter)['mean_test_score'].mean().reset_index()
+def search_default(model_name):
+    pattern = re.compile(rf'random_search_results_{model_name}_dataset_(\d+)\.csv')
+    df_list = []
 
-    for col in hyperparameter:
-        if col in full_results_df.columns:
-            df_grouped[col] = df_grouped[col].astype(full_results_df[col].dtype)
-            
-    # Wybór najlepszego zestawu hiperparametrów
-    best_idx = df_grouped['mean_test_score'].idxmax()
-    best_params = {}
-    for param in hyperparameter:
-        value = df_grouped.loc[best_idx, param]
-        best_params[param] = value
-    #best_params = df_grouped.loc[best_idx, hyperparameter].to_dict()
-    best_score = df_grouped.loc[best_idx, 'mean_test_score']
+    for filename in os.listdir('results_tunning'):
+        if match := pattern.match(filename):
+            results_rs = pd.read_csv(os.path.join('results_tunning', filename))
+            df_subset = results_rs[['params', 'mean_test_score']].copy()
+            df_list.append(df_subset)
+            results_rs = results_rs.dropna(subset=['mean_test_score'])
 
-    # Posortowana tabela wszystkich kombinacji hiperparametrów
-    df_sorted = df_grouped.sort_values('mean_test_score', ascending=False)
+    if not df_list:
+        print(f"Nie znaleziono plików dla modelu {model_name}")
+        return None
 
-    return best_params, best_score, df_sorted
+    for i, df in enumerate(df_list):
+        df.rename(columns={'mean_test_score': f'mean_test_score{i}'}, inplace=True)
 
-def evaluate_on_test(model, best_params, X_train, y_train, X_test, y_test):
-    best_model = model.__class__(**best_params, random_state=42)
-    best_model.fit(X_train, y_train)
-    
-    y_pred = best_model.predict(X_test)
-    y_pred_proba = best_model.predict_proba(X_test)[:, 1]
-    
-    test_auc = roc_auc_score(y_test, y_pred_proba)
-    
-    return test_auc, classification_report(y_test, y_pred)
+    merged_df = df_list[0]
+    for i in range(1, len(df_list)):
+        merged_df = pd.merge(merged_df, df_list[i], how='inner', on='params')
+
+    score_cols = [col for col in merged_df.columns if col.startswith('mean_test_score')]
+    merged_df['mean_test_score'] = merged_df[score_cols].mean(axis=1)
+    merged_df = merged_df.drop(columns=score_cols)
+
+    merged_df.sort_values('mean_test_score', ascending=False, inplace=True)
+
+    best_params = merged_df.iloc[0]['params']
+    best_score = merged_df.iloc[0]['mean_test_score']
+
+    print(f'Dla modelu {model_name}:')
+    print('Najlepsze hiperparametry domyślne:', best_params)
+    print('Najlepszy (średni) wynik domyślny:', best_score)
+
+    return best_params, best_score, merged_df
+
+
+def get_best_result(mode, model_name, df_number):
+    if mode == 'bayes':
+        df = pd.read_csv(os.path.join('results_tunning', f'bayes_search_results_{model_name}_dataset_{df_number}.csv'))
+    else:
+        df = pd.read_csv(os.path.join('results_tunning', f'random_search_results_{model_name}_dataset_{df_number}.csv'))
+        
+    df_clean = df.dropna(subset=['mean_test_score']).copy()
+
+    df_clean = df_clean.sort_values('mean_test_score', ascending=False)
+
+    best_params = df_clean.iloc[0]['params']
+    best_score = df_clean.iloc[0]['mean_test_score']
+
+    print(f'Dla modelu {model_name} i ramki danych {df_number}:')
+    print('Najlepsze hiperparametry:', best_params)
+    print('Najlepszy wynik:', best_score)
+
+    return model_name, best_params, best_score
+
+
+def evaluate_on_test(model, best_params, list_X_train, list_y_train, list_X_test, list_y_test):
+    classification_reports = {}
+    test_auc = {}
+    for i in range(len(best_params)):
+        best_model = model.__class__(**best_params[i], random_state=42)
+        best_model.fit(list_X_train[i], list_y_train[i])
+        y_pred = best_model.predict(list_X_test[i])
+        y_pred_proba = best_model.predict_proba(list_X_test[i])[:, 1]
+        test_auc[i] = roc_auc_score(list_y_test[i], y_pred_proba)
+        print(f'Dataset {i}: Test AUC: {test_auc[i]}')
+        classification_reports[i] = classification_report(list_y_test[i], y_pred)
+        print(classification_reports[i])
+    return test_auc, classification_reports
 
 
 def analyze_tunability(model, list_X_train, list_y_train, list_best_params, default_params, scoring = 'roc_auc'):
