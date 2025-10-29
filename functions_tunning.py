@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from numpy import maximum
 import os
 import re
+import ast
 
 def load_and_split(path, target_name, test_size=0.2, random_state=42):
     data = pd.read_csv(path)
@@ -188,6 +189,27 @@ def evaluate_on_test(model, best_params, list_X_train, list_y_train, list_X_test
     return test_auc, classification_reports
 
 
+def to_dict(params_list):
+    params_dict = {}
+
+    for param_pair in params_list:
+        # Dla każdego elementu "key: value"
+        key, value_str = param_pair.split(': ', 1)
+        key = key.strip("'\"")  # Usuń cudzysłowy
+
+        # Usuń np.float64() z value
+        value_str = re.sub(r'np\.float64\(([^)]+)\)', r'\1', value_str)
+
+        # Parsuj value
+        try:
+            value = ast.literal_eval(value_str)
+        except Exception:
+            value = value_str
+
+        params_dict[key] = value
+    return params_dict
+
+
 def analyze_tunability(model, list_X_train, list_y_train, list_best_params, default_params, scoring = 'roc_auc'):
     default_scores = []
     best_scores = []
@@ -196,17 +218,24 @@ def analyze_tunability(model, list_X_train, list_y_train, list_best_params, defa
     for i in range(len(list_X_train)):
         X_train = list_X_train[i]
         y_train = list_y_train[i]
-        
-        default_model = model.__class__(**default_params, random_state=42)
+        print(type(default_params))
+        print(default_params)
+        print(type(list_best_params[i]))
+        print(list_best_params[i])
+
+        default = to_dict(default_params[type(model).__name__][0][1:-1].split(', '))
+        default_model = model.__class__(**default, random_state=42)
         print(default_model)
         default_score = cross_val_score(default_model, X_train, y_train, cv=3, scoring=scoring).mean()
         default_scores.append(default_score)
 
-        best_model = model.__class__(**list_best_params[i], random_state=42)
+        best_par = to_dict(list_best_params[i][0][1:-1].split(', '))
+
+        best_model = model.__class__(**best_par, random_state=42)
 
         best_score = cross_val_score(best_model, X_train, y_train, cv=3, scoring=scoring).mean()
         best_scores.append(best_score)
         
         diff_scores.append(best_score - default_score)
-    return default_scores, best_scores, diff_scores   
+    return np.array(default_scores), np.array(best_scores), np.array(diff_scores)
     
